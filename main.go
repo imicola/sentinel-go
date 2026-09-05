@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 )
 
 type Target struct {
@@ -20,6 +21,7 @@ type TargetRequest struct {
 
 var targets = make(map[int]Target)
 var globalId = 0
+var mu sync.Mutex
 
 func httpInit(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
@@ -37,10 +39,13 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 
 func listTarget(w http.ResponseWriter, r *http.Request) {
 	httpInit(w)
+
+	mu.Lock()
 	list := make([]Target, 0, len(targets))
 	for _, target := range targets {
 		list = append(list, target)
 	}
+	mu.Unlock()
 
 	w.WriteHeader(http.StatusOK)
 	err := json.NewEncoder(w).Encode(list)
@@ -67,6 +72,7 @@ func addTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mu.Lock()
 	nextId := globalId + 1
 	globalId++
 
@@ -77,6 +83,7 @@ func addTarget(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targets[nextId] = target
+	mu.Unlock()
 
 	err2 := json.NewEncoder(w).Encode(target)
 	if err2 != nil {
@@ -93,8 +100,9 @@ func getTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-
+	mu.Lock()
 	target, ok := targets[id]
+	mu.Unlock()
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -122,6 +130,8 @@ func updateTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invaild json", http.StatusBadRequest)
 		return
 	}
+	mu.Lock()
+	defer mu.Unlock()
 
 	target, ok := targets[id]
 
@@ -156,6 +166,8 @@ func deleteTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	mu.Lock()
+	defer mu.Unlock()
 	_, ok := targets[id]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
