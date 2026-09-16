@@ -66,7 +66,7 @@ func TestHealthzMethodNotAllowed(t *testing.T) {
 	CheckCode(rec, http.StatusMethodNotAllowed, t)
 }
 
-func TestCreateAndGetTarget(t *testing.T) {
+func TestCRUDTarget(t *testing.T) {
 	mu.Lock()
 	targets = make(map[int]Target)
 	globalId = 0

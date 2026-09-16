@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
+	"time"
 )
 
 type Target struct {
@@ -177,7 +184,7 @@ func deleteTarget(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func main() {
+func run() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", healthz)
 
@@ -188,10 +195,51 @@ func main() {
 	mux.HandleFunc("PUT /target/{id}", updateTarget)
 	mux.HandleFunc("DELETE /target/{id}", deleteTarget)
 
-	log.Println("Server start ok")
-	err := http.ListenAndServe(":8080", mux)
+	server := &http.Server{
+		Addr:              ":9090",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,  // 客户端传入Header限制
+		ReadTimeout:       8 * time.Second,  // 服务器读取整个请求时间限制
+		WriteTimeout:      10 * time.Second, // 服务器写入响应时间限制
+		IdleTimeout:       30 * time.Second, // HTTP keep-alive
+	}
+
+	serverErr := make(chan error, 1)
+
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	go func() {
+		serverErr <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("listen and serve: %w", err)
+		}
+		log.Println("Server Normal exit")
+		return nil
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err := server.Shutdown(shutdownCtx)
+		if err != nil {
+			return fmt.Errorf("shutdown server: %w", err)
+		}
+		log.Println("get system stop signal,exit Http server")
+		return nil
+	}
+}
+
+func main() {
+	err := run()
 	if err != nil {
-		log.Fatal(err)
-		return
+		log.Fatalf("something error : %+v", err)
 	}
 }
