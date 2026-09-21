@@ -67,17 +67,8 @@ func TestHealthzMethodNotAllowed(t *testing.T) {
 }
 
 func TestCRUDTarget(t *testing.T) {
-	mu.Lock()
-	targets = make(map[int]Target)
-	globalId = 0
-	mu.Unlock()
-
-	router := http.NewServeMux()
-	router.HandleFunc("POST /target", addTarget)
-	router.HandleFunc("GET /target/{id}", getTarget)
-	router.HandleFunc("PUT /target/{id}", updateTarget)
-	router.HandleFunc("DELETE /target/{id}", deleteTarget)
-
+	store := InitMemoryStore()
+	router := NewRouter(store)
 	// == POST ==
 
 	createReq := httptest.NewRequest(
@@ -214,13 +205,8 @@ func TestCRUDTarget(t *testing.T) {
 
 func TestPostWithErrorJson(t *testing.T) {
 
-	mu.Lock()
-	targets = make(map[int]Target)
-	globalId = 0
-	mu.Unlock()
-
-	router := http.NewServeMux()
-	router.HandleFunc("POST /target", addTarget)
+	store := InitMemoryStore()
+	router := NewRouter(store)
 
 	postRec := httptest.NewRecorder()
 
@@ -240,28 +226,34 @@ func TestPostWithErrorJson(t *testing.T) {
 	CheckHeader(postRec, "text/plain; charset=utf-8", t)
 
 	// Assert: Status
-	mu.Lock()
+	targets := store.List()
 	targetlen := len(targets)
-	id := globalId
-	mu.Unlock()
+
+	legalbody := `{"name":"test","address":"localhost:1010"}`
+	postReq2 := httptest.NewRequest(
+		http.MethodPost,
+		"/target",
+		strings.NewReader(legalbody),
+	)
+	postRec2 := httptest.NewRecorder()
+	router.ServeHTTP(postRec2, postReq2)
+	var res Target
+	if err := json.Unmarshal(postRec2.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 
 	if targetlen != 0 {
 		t.Fatalf("invalid POST changed targets: got %d targets, want 0", targetlen)
 	}
 
-	if id != 0 {
-		t.Fatalf("invalid POST changed globalId: got %d, want 0", id)
+	if res.Id != 1 {
+		t.Fatalf("invalid POST changed ID sequence = %d: want 1", res.Id)
 	}
 }
 
 func TestPostMissingField(t *testing.T) {
-	mu.Lock()
-	targets = make(map[int]Target)
-	globalId = 0
-	mu.Unlock()
-
-	router := http.NewServeMux()
-	router.HandleFunc("POST /target", addTarget)
+	store := InitMemoryStore()
+	router := NewRouter(store)
 
 	postRec := httptest.NewRecorder()
 
@@ -283,17 +275,27 @@ func TestPostMissingField(t *testing.T) {
 
 	// Assert : Ststus
 
-	mu.Lock()
+	targets := store.List()
 	targetlen := len(targets)
-	id := globalId
-	mu.Unlock()
+	legalbody := `{"name":"test","address":"localhost:1010"}`
+	postReq2 := httptest.NewRequest(
+		http.MethodPost,
+		"/target",
+		strings.NewReader(legalbody),
+	)
+	postRec2 := httptest.NewRecorder()
+	router.ServeHTTP(postRec2, postReq2)
+	var res Target
+	if err := json.Unmarshal(postRec2.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 
 	if targetlen != 0 {
 		t.Fatalf("invalid POST changed targets: got %d targets, want 0", targetlen)
 	}
 
-	if id != 0 {
-		t.Fatalf("invalid POST changed globalId: got %d, want 0", id)
+	if res.Id != 1 {
+		t.Fatalf("invalid POST changed ID sequence = %d: want 1", res.Id)
 	}
 }
 
@@ -305,15 +307,8 @@ func TestListCheck(t *testing.T) {
 		2.POST 	=> tow targe add
 		3.GET 	=> return tow targe
 	*/
-
-	mu.Lock()
-	targets = make(map[int]Target)
-	globalId = 0
-	mu.Unlock()
-
-	router := http.NewServeMux()
-	router.HandleFunc("GET /target", listTarget)
-	router.HandleFunc("POST /target", addTarget)
+	store := InitMemoryStore()
+	router := NewRouter(store)
 
 	getRec := httptest.NewRecorder()
 	getReq := httptest.NewRequest(
@@ -338,17 +333,11 @@ func TestListCheck(t *testing.T) {
 	CheckCode(getRec, 200, t)
 	CheckHeader(getRec, testHandler, t)
 
-	mu.Lock()
+	targets := store.List()
 	targetslen := len(targets)
-	id := globalId
-	mu.Unlock()
 
 	if targetslen != 0 {
 		t.Fatalf("invalid GET changed targets: got %d targets, want 0", targetslen)
-	}
-
-	if id != 0 {
-		t.Fatalf("invalid GET changed globalId: got %d, want 0", id)
 	}
 
 	// Assert Status
@@ -409,6 +398,9 @@ func TestListCheck(t *testing.T) {
 		}
 
 		wantm[gotTarget.Id] = gotTarget
+		if gotTarget.Id != i+1 {
+			t.Errorf("target ID = %d, want %d", gotTarget.Id, i+1)
+		}
 	}
 
 	if len(wantm) != 2 {
@@ -473,17 +465,9 @@ func TestListCheck(t *testing.T) {
 }
 
 func TestConcurrentCreateTarget(t *testing.T) {
-	// 1. 重置 targets 和 globalId
-
-	mu.Lock()
-	targets = make(map[int]Target)
-	globalId = 0
-	mu.Unlock()
+	store := InitMemoryStore()
+	router := NewRouter(store)
 	// 2. 创建 router，注册 POST /target
-
-	router := http.NewServeMux()
-	router.HandleFunc("POST /target", addTarget)
-
 	const count = 50
 
 	type result struct {
@@ -574,15 +558,18 @@ func TestConcurrentCreateTarget(t *testing.T) {
 		t.Errorf("Id insufficient,Missing some target")
 	}
 
-	mu.Lock()
+	targets := store.List()
 	targetCount := len(targets)
-	lastID := globalId
-	mu.Unlock()
+
+	for i := 1; i <= count; i++ {
+		_, ok := rep[i]
+		if !ok {
+			t.Errorf("store ID = %d doesn‘t exist", i)
+		}
+	}
 
 	if targetCount != count {
 		t.Errorf("stored targets = %d, want %d", targetCount, count)
 	}
-	if lastID != count {
-		t.Errorf("globalId = %d, want %d", lastID, count)
-	}
+
 }

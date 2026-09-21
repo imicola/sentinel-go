@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -26,9 +25,9 @@ type TargetRequest struct {
 	Addr string `json:"address"`
 }
 
-var targets = make(map[int]Target)
-var globalId = 0
-var mu sync.Mutex
+type Handler struct {
+	store *MemoryStore
+}
 
 func httpInit(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
@@ -44,15 +43,10 @@ func healthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-func listTarget(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) listTarget(w http.ResponseWriter, r *http.Request) {
 	httpInit(w)
 
-	mu.Lock()
-	list := make([]Target, 0, len(targets))
-	for _, target := range targets {
-		list = append(list, target)
-	}
-	mu.Unlock()
+	list := h.store.List()
 
 	w.WriteHeader(http.StatusOK)
 	err := json.NewEncoder(w).Encode(list)
@@ -62,7 +56,7 @@ func listTarget(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func addTarget(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) addTarget(w http.ResponseWriter, r *http.Request) {
 	httpInit(w)
 	var req TargetRequest
 
@@ -79,18 +73,7 @@ func addTarget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mu.Lock()
-	nextId := globalId + 1
-	globalId++
-
-	target := Target{
-		Id:   nextId,
-		Name: req.Name,
-		Addr: req.Addr,
-	}
-
-	targets[nextId] = target
-	mu.Unlock()
+	target := h.store.Create(req)
 
 	err2 := json.NewEncoder(w).Encode(target)
 	if err2 != nil {
@@ -100,17 +83,17 @@ func addTarget(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func getTarget(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) getTarget(w http.ResponseWriter, r *http.Request) {
 	httpInit(w)
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	mu.Lock()
-	target, ok := targets[id]
-	mu.Unlock()
-	if !ok {
+
+	target, err := h.store.Get(id)
+
+	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
@@ -119,7 +102,7 @@ func getTarget(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(target)
 }
 
-func updateTarget(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) updateTarget(w http.ResponseWriter, r *http.Request) {
 	httpInit(w)
 	var req TargetRequest
 
@@ -137,25 +120,21 @@ func updateTarget(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invaild json", http.StatusBadRequest)
 		return
 	}
-	mu.Lock()
-	defer mu.Unlock()
+	target, err := h.store.Update(id, req)
 
-	target, ok := targets[id]
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrTargetNotFound):
+			http.Error(w, "invalid target", http.StatusNotFound)
 
-	if !ok {
-		http.Error(w, "invaild target", http.StatusNotFound)
+		case errors.Is(err, ErrInvalidTarget):
+			http.Error(w, "name and address are required", http.StatusBadRequest)
+
+		default:
+			http.Error(w, "server error", http.StatusInternalServerError)
+		}
 		return
 	}
-
-	if req.Name == "" || req.Addr == "" {
-		http.Error(w, "name and address are required", http.StatusBadRequest)
-		return
-	}
-
-	target.Name = req.Name
-	target.Addr = req.Addr
-
-	targets[id] = target
 
 	err2 := json.NewEncoder(w).Encode(target)
 	if err2 != nil {
@@ -166,35 +145,38 @@ func updateTarget(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func deleteTarget(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) deleteTarget(w http.ResponseWriter, r *http.Request) {
 	httpInit(w)
 	id, err := strconv.Atoi(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	_, ok := targets[id]
-	if !ok {
+	err2 := h.store.Delete(id)
+	if err2 != nil {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	delete(targets, id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func run() error {
+func NewRouter(store *MemoryStore) *http.ServeMux {
 	mux := http.NewServeMux()
+	h := &Handler{store: store}
 	mux.HandleFunc("/healthz", healthz)
 
-	mux.HandleFunc("GET /target", listTarget)
-	mux.HandleFunc("POST /target", addTarget)
+	mux.HandleFunc("GET /target", h.listTarget)
+	mux.HandleFunc("POST /target", h.addTarget)
 
-	mux.HandleFunc("GET /target/{id}", getTarget)
-	mux.HandleFunc("PUT /target/{id}", updateTarget)
-	mux.HandleFunc("DELETE /target/{id}", deleteTarget)
+	mux.HandleFunc("GET /target/{id}", h.getTarget)
+	mux.HandleFunc("PUT /target/{id}", h.updateTarget)
+	mux.HandleFunc("DELETE /target/{id}", h.deleteTarget)
+	return mux
+}
 
+func run() error {
+	store := InitMemoryStore()
+	mux := NewRouter(store)
 	server := &http.Server{
 		Addr:              ":9090",
 		Handler:           mux,
