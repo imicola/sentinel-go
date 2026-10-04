@@ -68,7 +68,7 @@ func TestHealthzMethodNotAllowed(t *testing.T) {
 
 func TestCRUDTarget(t *testing.T) {
 	store := InitMemoryStore()
-	router := NewRouter(store)
+	router := NewRouter(store, "/proc/meminfo")
 	// == POST ==
 
 	createReq := httptest.NewRequest(
@@ -206,7 +206,7 @@ func TestCRUDTarget(t *testing.T) {
 func TestPostWithErrorJson(t *testing.T) {
 
 	store := InitMemoryStore()
-	router := NewRouter(store)
+	router := NewRouter(store, "/proc/meminfo")
 
 	postRec := httptest.NewRecorder()
 
@@ -253,7 +253,7 @@ func TestPostWithErrorJson(t *testing.T) {
 
 func TestPostMissingField(t *testing.T) {
 	store := InitMemoryStore()
-	router := NewRouter(store)
+	router := NewRouter(store, "/proc/meminfo")
 
 	postRec := httptest.NewRecorder()
 
@@ -308,7 +308,7 @@ func TestListCheck(t *testing.T) {
 		3.GET 	=> return tow targe
 	*/
 	store := InitMemoryStore()
-	router := NewRouter(store)
+	router := NewRouter(store, "/proc/meminfo")
 
 	getRec := httptest.NewRecorder()
 	getReq := httptest.NewRequest(
@@ -466,7 +466,7 @@ func TestListCheck(t *testing.T) {
 
 func TestConcurrentCreateTarget(t *testing.T) {
 	store := InitMemoryStore()
-	router := NewRouter(store)
+	router := NewRouter(store, "/proc/meminfo")
 	// 2. 创建 router，注册 POST /target
 	const count = 50
 

@@ -160,7 +160,7 @@ func (h *Handler) deleteTarget(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func NewRouter(store *MemoryStore) *http.ServeMux {
+func NewRouter(store *MemoryStore, meminfoPath string) *http.ServeMux {
 	mux := http.NewServeMux()
 	h := &Handler{store: store}
 	mux.HandleFunc("/healthz", healthz)
@@ -171,12 +171,13 @@ func NewRouter(store *MemoryStore) *http.ServeMux {
 	mux.HandleFunc("GET /target/{id}", h.getTarget)
 	mux.HandleFunc("PUT /target/{id}", h.updateTarget)
 	mux.HandleFunc("DELETE /target/{id}", h.deleteTarget)
+	mux.HandleFunc("/metrics", NewMetricsHandler(meminfoPath))
 	return mux
 }
 
 func run() error {
 	store := InitMemoryStore()
-	mux := NewRouter(store)
+	mux := NewRouter(store, "/proc/meminfo")
 	server := &http.Server{
 		Addr:              ":9090",
 		Handler:           mux,

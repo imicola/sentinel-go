@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -53,4 +54,13 @@ func parseMemAvailable(r io.Reader) (uint64, error) {
 		return 0, err
 	}
 	return 0, ErrMemAvailableMissing
+}
+
+func readMemAvailable(path string) (uint64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	return parseMemAvailable(f)
 }
