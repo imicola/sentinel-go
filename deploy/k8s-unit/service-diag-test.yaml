@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-diag-test
+  namespace: w41-practice
+  labels:
+    app: sentinel-diag-test
+spec:
+  type: ClusterIP
+  selector:
+    app: sentinel-go
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+      

@@ -1,0 +1,14 @@
+# .git
+.git/
+.gitignore
+
+# other
+experiments/
+README.md
+prometheus.yml
+
+# Agent
+AGENTS.md
+
+# db
+db/

@@ -1,0 +1,24 @@
+services:
+  sentinel-go:
+    image: sentinel-go:unit-20261003
+    ports:
+      - "127.0.0.1:29090:9090"
+
+  prometheus:
+    image: prom/prometheus:v2.44.0
+    ports:
+      - "127.0.0.1:29091:9090"
+    volumes:
+      - type: bind
+        source: ./prometheus.yml
+        target: /etc/prometheus/prometheus.yml
+        read_only: true
+        bind:
+          create_host_path: false
+      - prom-data:/prometheus
+
+    depends_on:
+      - sentinel-go
+
+volumes:
+  prom-data:

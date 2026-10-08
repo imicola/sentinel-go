@@ -1,0 +1,26 @@
+# deployment
+# 指导Deployment Controller工作，表示了我们需要什么Pod模板，需要多少Pod模板
+apiVersion: apps/v1 
+kind: Deployment
+metadata:
+  name: sentinel-deployment
+  namespace: w41-practice
+  labels:
+    app: sentinel-go
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-go
+  template:
+    metadata:
+      labels:
+        app: sentinel-go
+    spec:
+      containers:
+        - name: sentinel-go
+          image: sentinel-go:unit-20261003
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+              name: http

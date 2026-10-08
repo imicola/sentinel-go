@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: sentinel-probe-test
+  namespace: w41-practice
+  labels:
+    app: sentinel-probe-test
+spec:
+  type: ClusterIP
+  selector:
+    app: sentinel-probe-test
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090

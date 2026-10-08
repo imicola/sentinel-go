@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sentinel-probe-test
+  namespace: w41-practice
+  labels:
+    app: sentinel-prob-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sentinel-probe-test
+  template:
+    metadata:
+      labels:
+        app: sentinel-probe-test
+    spec:
+      containers:
+        - name: sentinel-probe-test
+          image: sentinel-go:unit-20261003
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9090
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9090
+            initialDelaySeconds: 3
+            periodSeconds: 3
+            failureThreshold: 2
