@@ -2,6 +2,7 @@ package contextlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -68,4 +69,55 @@ func TestParentContext(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("worker did not exit")
 	}
+}
+
+func TestChildCancelIsolation(t *testing.T) {
+	parent, cancelParent := context.WithCancel(context.Background())
+	defer cancelParent()
+	childA, cancelA := context.WithCancel(parent)
+	defer cancelA()
+	childB, cancelB := context.WithCancel(parent)
+	defer cancelB()
+
+	exitedA := make(chan error, 1)
+	exitedB := make(chan error, 1)
+	go Worker(childA, exitedA)
+	go Worker(childB, exitedB)
+
+	cancelA()
+
+	select {
+	case err := <-exitedA:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Worker A: unexpected error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Worker A did not exit in time")
+	}
+
+	if parent.Err() != nil {
+		t.Fatalf("parent was unexpectedly canceled: %v", parent.Err())
+	}
+	if childB.Err() != nil {
+		t.Fatalf("childB was unexpectedly canceled: %v", childB.Err())
+	}
+
+	select {
+	case <-parent.Done():
+		t.Fatal("parent was unexpectedly canceled")
+	case <-childB.Done():
+		t.Fatal("childB was unexpectedly canceled")
+	default:
+	}
+
+	cancelParent()
+	select {
+	case err := <-exitedB:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Worker B: unexpected error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Worker B did not exit in time")
+	}
+
 }
