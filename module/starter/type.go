@@ -68,7 +68,7 @@ type ReadError struct {
 }
 
 // Snapshot：一次受限观察采集到的全部事实（只读）。
-	type Snapshot struct {
+type Snapshot struct {
 	TakenAt    time.Time
 	Node       NodeState
 	Deployment DeploymentState

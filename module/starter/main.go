@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -79,19 +78,14 @@ func main() {
 	defer cancel()
 
 	reader := NewKubeReader(cs, ReaderParams{Namespace: *namespace, Node: *node, Deployment: *deployment})
-	snap := reader.ReadSnapshot(ctx)
 
 	// ---- 输出层：这一段负责错误与呈现，不负责判断 ----
 	// 0017 阶段：在这里加 report := Analyze(snap)，把输出换成 Report（Verdict + Reasons + 时间）。
-	out, err := json.MarshalIndent(snap, "", "  ")
+	code, err := RunPreflight(ctx, reader, os.Stdout)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "序列化 Snapshot 失败:", err)
+		fmt.Fprintln(os.Stderr, "输出 JSON 失败:", err)
 		os.Exit(1)
 	}
-	fmt.Println(string(out))
+	os.Exit(code)
 
-	if len(snap.Errors) > 0 {
-		fmt.Fprintf(os.Stderr, "读取存在 %d 处失败（详见 errors 字段）；数据不完整，不能当作正常\n", len(snap.Errors))
-		os.Exit(1)
-	}
 }
