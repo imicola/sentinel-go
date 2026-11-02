@@ -91,6 +91,7 @@ type EvictionProgress struct {
 	StartedAt      metav1.Time   `json:"startedAt"`
 	Deadline       metav1.Time   `json:"deadline"`
 	ActivePod      *ActivePodRef `json:"activePod,omitempty"`
+	NextActionAt   *metav1.Time  `json:"nextActionAt,omitempty"`
 }
 
 // MaintenancePlanStatus：协调器写的区——进展报告。
@@ -123,9 +124,14 @@ func (in *EvictionProgress) DeepCopyInto(out *EvictionProgress) {
 	*out = *in
 	out.StartedAt = in.StartedAt
 	out.Deadline = in.Deadline
+	out.NextActionAt = in.NextActionAt
 	if in.ActivePod != nil {
 		ap := *in.ActivePod
 		out.ActivePod = &ap
+	}
+	if in.NextActionAt != nil {
+		na := *in.NextActionAt
+		out.NextActionAt = &na
 	}
 }
 

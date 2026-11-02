@@ -384,9 +384,12 @@ func progressEqual(a, b *EvictionProgress) bool {
 	if hasB {
 		bp = *b.ActivePod
 	}
-	return a.PlanGeneration == b.PlanGeneration && a.DeploymentUID == b.DeploymentUID &&
+
+	return a.PlanGeneration == b.PlanGeneration &&
+		a.DeploymentUID == b.DeploymentUID &&
 		a.StartedAt.Equal(&b.StartedAt) && a.Deadline.Equal(&b.Deadline) &&
-		hasA == hasB && ap == bp
+		hasA == hasB && ap == bp &&
+		a.NextActionAt.Equal(b.NextActionAt)
 }
 
 // copyStatus：写前快照——进度是指针，先深拷再改，才能做"无变化不写"的比较。

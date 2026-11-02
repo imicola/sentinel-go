@@ -249,6 +249,8 @@ func TestDrain_BudgetRecoversThenProceeds(t *testing.T) {
 	dep := ownedDeployment(1, 1)
 	rs := rsFor(dep)
 	plan := cordonedDrainPlan("uid-plan-1", 10*time.Minute)
+	now := time.Now().UTC().Truncate(time.Second)
+	clock := func() time.Time { return now }
 	pod := ownedPod(
 		rs, "sentinel-aaa", "uid-pod-a",
 		"worker-a", true, false,
@@ -258,7 +260,7 @@ func TestDrain_BudgetRecoversThenProceeds(t *testing.T) {
 	)
 
 	ev := NewFakeEvictor(pdbRefusalError(0))
-	r := &MaintenancePlanReconciler{Client: c, Evictor: ev}
+	r := &MaintenancePlanReconciler{Client: c, Evictor: ev, Now: clock}
 	res, err := r.Reconcile(context.Background(), key())
 	if err != nil {
 		t.Fatal(err)
@@ -280,6 +282,7 @@ func TestDrain_BudgetRecoversThenProceeds(t *testing.T) {
 		t.Fatalf("应发出一次驱逐请求，got %d 次", len(ev.Calls()))
 	}
 	// 第二轮模拟条件恢复：EvictPod 返回 nil，允许驱逐。
+	now = now.Add(121 * time.Second)
 	var beforePod corev1.Pod
 	if err := c.Get(context.Background(), clientKey("sentinel-aaa"), &beforePod); err != nil {
 		t.Fatal(err)

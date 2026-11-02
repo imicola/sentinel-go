@@ -26,6 +26,7 @@ import (
 type MaintenancePlanReconciler struct {
 	client.Client
 	Evictor PodEvictor
+	Now     func() time.Time
 }
 
 // Reconcile：一轮协调。阶段选择只看一个持久事实——疏散进度是否存在。
@@ -50,6 +51,14 @@ func (r *MaintenancePlanReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return r.reconcileCordonStage(ctx, l, &plan, facts)
 	}
 	return r.reconcileDrainStage(ctx, l, &plan, facts)
+}
+
+// 统一的时间提供入口
+func (r *MaintenancePlanReconciler) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 // reconcileCordonStage：W43 cordon 阶段（0021 流程原样）＋ W44 进入点——
@@ -123,7 +132,7 @@ func (r *MaintenancePlanReconciler) startDrain(ctx context.Context, l logr.Logge
 	if plan.Spec.DrainTimeoutSeconds != nil && *plan.Spec.DrainTimeoutSeconds > 0 {
 		timeout = *plan.Spec.DrainTimeoutSeconds
 	}
-	now := time.Now()
+	now := r.now()
 	plan.Status.EvictionProgress = &EvictionProgress{
 		PlanGeneration: plan.Generation,
 		DeploymentUID:  f.TargetUID,
@@ -147,12 +156,18 @@ func (r *MaintenancePlanReconciler) startDrain(ctx context.Context, l logr.Logge
 // reconcileDrainStage：疏散阶段。判断面给动作，这里只负责状态推进与重排队。
 func (r *MaintenancePlanReconciler) reconcileDrainStage(ctx context.Context, l logr.Logger, plan *MaintenancePlan, f Facts) (ctrl.Result, error) {
 	before := copyStatus(plan.Status)
-	d := DecideDrain(plan, &f, time.Now())
-
+	now := r.now()
+	d := DecideDrain(plan, &f, now)
 	if d.ClearActive && plan.Status.EvictionProgress != nil {
 		plan.Status.EvictionProgress.ActivePod = nil
 	}
 	if d.Action == ActionEvict {
+		next := plan.Status.EvictionProgress.NextActionAt
+		if next != nil && now.Before(next.Time) {
+			return ctrl.Result{
+				RequeueAfter: next.Time.Sub(now),
+			}, nil
+		}
 		return r.evictOne(ctx, l, plan, d)
 	}
 
@@ -226,6 +241,8 @@ func (r *MaintenancePlanReconciler) evictOne(ctx context.Context, l logr.Logger,
 	plan.Status.ObservedGeneration = plan.Generation
 	plan.Status.Phase = PhaseDraining
 	plan.Status.Reason = "eviction-request-submitted"
+	next := metav1.NewTime(r.now().Add(requeueAfter).UTC())
+	plan.Status.EvictionProgress.NextActionAt = &next
 	if err := r.Status().Update(ctx, plan); err != nil {
 		if errors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
@@ -321,6 +338,10 @@ func (r *MaintenancePlanReconciler) evictOne(ctx context.Context, l logr.Logger,
 
 // writeDrainStatus：统一的"无变化不写"落库。
 func (r *MaintenancePlanReconciler) writeDrainStatus(ctx context.Context, plan *MaintenancePlan, before MaintenancePlanStatus, result ctrl.Result) (ctrl.Result, error) {
+	if result.RequeueAfter > 0 && plan.Status.EvictionProgress != nil {
+		next := metav1.NewTime(r.now().Add(result.RequeueAfter).UTC())
+		plan.Status.EvictionProgress.NextActionAt = &next
+	}
 	if !statusEqual(before, plan.Status) {
 		if err := r.Status().Update(ctx, plan); err != nil {
 			if errors.IsConflict(err) {
