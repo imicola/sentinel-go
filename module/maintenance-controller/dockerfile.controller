@@ -1,0 +1,12 @@
+FROM golang:1.26-bookworm AS builder
+ENV GOWORK=off
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o /bin/maintenance-controller .
+
+FROM debian:bookworm-slim
+COPY --from=builder /bin/maintenance-controller /maintenance-controller
+USER 65532:65532
+ENTRYPOINT ["/maintenance-controller"]

@@ -34,18 +34,22 @@ func main() {
 	// 参数用独立 FlagSet 解析——不碰全局 flag.CommandLine（0020 的坑）。
 	fs := flag.NewFlagSet(os.Args[0], flag.ExitOnError)
 	var (
-		kubeconfig  = fs.String("kubeconfig", "", "kubeconfig 文件路径（必填）")
-		contextName = fs.String("context", "", "context 名（必填，不回退默认值）")
+		mode = fs.String(
+			"mode", "", "运行模式：local 或 in-cluster（必填）",
+		)
+		kubeconfig = fs.String(
+			"kubeconfig", "", "kubeconfig 文件路径（local 模式必填）",
+		)
+		contextName = fs.String(
+			"context", "", "context 名（local 模式必填）",
+		)
 	)
 	fs.Parse(os.Args[1:])
-	if *kubeconfig == "" || *contextName == "" {
-		fmt.Fprintln(os.Stderr, "--kubeconfig 与 --context 必填（显式连接，不回退默认值）")
-		fs.Usage()
-		os.Exit(1)
-	}
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 
-	restCfg, err := loadConfig(*kubeconfig, *contextName)
+	restCfg, err := loadRuntimeConfig(
+		*mode, *kubeconfig, *contextName,
+	)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "装配连接失败:", err)
 		os.Exit(1)
@@ -101,6 +105,40 @@ func loadConfig(kubeconfigPath, contextName string) (*rest.Config, error) {
 	}
 	return clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules,
 		&clientcmd.ConfigOverrides{CurrentContext: contextName}).ClientConfig()
+}
+
+// loadRuntimeConfig 双入口启动,支持显式context和绑定 Pod 内提供的连接身份
+func loadRuntimeConfig(
+	mode, kubeconfigPath, contextName string,
+) (*rest.Config, error) {
+	switch mode {
+	case "local":
+		if kubeconfigPath == "" || contextName == "" {
+			return nil, fmt.Errorf(
+				"--mode local 需要 --kubeconfig 与 --context",
+			)
+		}
+		return loadConfig(kubeconfigPath, contextName)
+
+	case "in-cluster":
+		if kubeconfigPath != "" || contextName != "" {
+			return nil, fmt.Errorf(
+				"--mode in-cluster 不接受 --kubeconfig 或 --context",
+			)
+		}
+
+		cfg, err := rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("读取集群内连接配置: %w", err)
+		}
+		return cfg, nil
+
+	case "":
+		return nil, fmt.Errorf("--mode 必填：local 或 in-cluster")
+
+	default:
+		return nil, fmt.Errorf("不支持的 --mode %q", mode)
+	}
 }
 
 // mustScheme：内置类型 + MaintenancePlan。

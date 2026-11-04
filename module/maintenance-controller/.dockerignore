@@ -1,0 +1,21 @@
+# 集群安装清单，不参与当前程序编译
+k8s/
+
+# 本地连接配置，不作为镜像构建输入
+.kube/
+kubeconfig
+kubeconfig.*
+.env
+.env.*
+
+# 本地编译和调试产物
+bin/
+dist/
+*.exe
+*.test
+*.log
+coverage.out
+
+# 构建说明不复制进源码目录
+dockerfile.controller
+.dockerignore
