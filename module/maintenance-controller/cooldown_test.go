@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 type inspectingEvictor func(
@@ -233,5 +235,45 @@ func TestCooldown_EvictionProgress(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("没有进入驱逐调用，未执行顺序检查")
+	}
+}
+
+func TestCooldown_CompletionIsReportedBeforeExpiry(t *testing.T) {
+	dep := ownedDeployment(1, 1)
+	rs := rsFor(dep)
+	plan := cordonedDrainPlan("uid-plan-1", 10*time.Minute)
+	now := time.Now().UTC().Truncate(time.Second)
+	clock := func() time.Time { return now }
+	next := metav1.NewTime(now.Add(120 * time.Second))
+	deadline := metav1.NewTime(now.Add(10 * time.Minute))
+	plan.Status.EvictionProgress.NextActionAt = &next
+	plan.Status.Phase = PhaseDraining
+	plan.Status.EvictionProgress.Deadline = deadline
+	pod := ownedPod(
+		rs, "replace-pod", "uid-pod-b",
+		"worker-b", true, false,
+	)
+	c := newTestClient(
+		plan, cordonedNode("uid-plan-1"), dep, rs, pod,
+	)
+	ev := NewFakeEvictor(pdbRefusalError(120))
+	r := &MaintenancePlanReconciler{
+		Client:  c,
+		Evictor: ev,
+		Now:     clock,
+	}
+
+	if _, err := r.Reconcile(context.Background(), key()); err != nil {
+		t.Fatal(err)
+	}
+	got := getPlan(t, c)
+	if got.Status.Phase != PhaseWorkloadEvacuated {
+		t.Fatalf("预期仍在 PhaseWorkloadEvacuated，实际已标记为 %v", got.Status.Phase)
+	}
+	if got.Status.Reason != "workload-evacuated" {
+		t.Fatalf("预期原因仍为 workload-evacuated，实际为 %v", got.Status.Reason)
+	}
+	if len(ev.Calls()) != 0 {
+		t.Fatalf("预期驱逐调用数为 0，实际为 %v", len(ev.Calls()))
 	}
 }

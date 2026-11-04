@@ -1,0 +1,112 @@
+# MaintenancePlan CRD v3 + W45 参考补丁字段：status.evictionProgress.nextActionAt。
+# 与 W44 的 maintenanceplan-crd-v3.yaml 相比只多一个 status 属性；metadata.name 相同，
+# kubectl apply 会原地更新 schema。不先更新 schema，API Server 会按结构化 schema 裁剪掉未知的
+# nextActionAt：冷却字段永远写不进去，而且不报错。第一次 429 之后用
+#   kubectl get mplan <name> -n maintenance-lab -o jsonpath='{.status.evictionProgress.nextActionAt}'
+# 读到非空值，才能说字段真的持久化了。字段名若在学习时改动，这里同步。
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: maintenanceplans.maintenance.studymate.io
+spec:
+  group: maintenance.studymate.io
+  names:
+    plural: maintenanceplans
+    singular: maintenanceplan
+    kind: MaintenancePlan
+    shortNames:
+      - mplan
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [nodeName, targetRef]
+              properties:
+                nodeName:
+                  type: string
+                  description: 想维护的节点名
+                targetRef:
+                  type: object
+                  required: [namespace, name]
+                  properties:
+                    namespace:
+                      type: string
+                    name:
+                      type: string
+                allowEviction:
+                  type: boolean
+                  default: false
+                  description: 显式驱逐许可；缺省 false——旧申请止于 Cordoned
+                drainTimeoutSeconds:
+                  type: integer
+                  format: int64
+                  minimum: 1
+                  description: 整轮疏散固定截止秒数；未填由程序取教学示例 600
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Blocked, Cordoned, Draining, WaitingForReplacement, WorkloadEvacuated]
+                reason:
+                  type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+                cordonIntent:
+                  type: object
+                  description: 受限意图——执行 cordon 前记下的目标身份
+                  properties:
+                    nodeUID:
+                      type: string
+                evictionProgress:
+                  type: object
+                  description: 一轮疏散的最小持久进度（调用前保存）
+                  properties:
+                    planGeneration:
+                      type: integer
+                      format: int64
+                    deploymentUID:
+                      type: string
+                    startedAt:
+                      type: string
+                      format: date-time
+                    deadline:
+                      type: string
+                      format: date-time
+                    activePod:
+                      type: object
+                      description: 至多一份在途驱逐目标（名字定位，UID 是身份）
+                      properties:
+                        namespace:
+                          type: string
+                        name:
+                          type: string
+                        uid:
+                          type: string
+                    nextActionAt:
+                      type: string
+                      format: date-time
+                      description: 下一次允许发出驱逐请求的最早时刻（持久动作冷却，RFC3339 UTC）；缺省为空＝不冷却
+      additionalPrinterColumns:
+        - name: Node
+          type: string
+          jsonPath: .spec.nodeName
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Allow-Evict
+          type: boolean
+          jsonPath: .spec.allowEviction
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
