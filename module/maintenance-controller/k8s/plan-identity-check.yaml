@@ -1,0 +1,11 @@
+apiVersion: maintenance.studymate.io/v1alpha1
+kind: MaintenancePlan
+metadata:
+  name: identity-check-worker-a
+  namespace: maintenance-lab
+spec:
+  nodeName: work-maintenance-worker
+  targetRef:
+    namespace: maintenance-lab
+    name: maintenance-sentinel
+  allowEviction: false

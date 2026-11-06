@@ -2,7 +2,7 @@
 
 一个以 Go 标准库为核心的小型 HTTP 服务，用于实践 API 开发、Linux 指标采集，以及容器与 Kubernetes 中的服务运行和故障诊断。
 
-项目从可测试的 Target CRUD 起步，逐步连接 `/proc/meminfo`、Prometheus、Docker Compose 和本地 Kubernetes。当前也作为 Kubernetes 节点维护实验的示例负载，后续探索 Go 控制器中的维护协调与恢复；控制器尚未实现。
+项目从可测试的 Target CRUD 起步，逐步连接 `/proc/meminfo`、Prometheus、Docker Compose 和本地 Kubernetes。当前也作为 Kubernetes 节点维护实验的示例负载；仓库内的[独立维护控制器模块](./module/maintenance-controller/README.md)已经实现受限维护、持久冷却与镜像入口，集群内专用身份部署仍待验证。
 
 这是持续迭代的学习项目，开发过程使用了 AI 辅助教学、代码审查与文档整理。下面分别说明现有实现、实验入口和限制，便于复现与评估。
 
@@ -16,7 +16,7 @@
 | Linux 指标 | 将 MemAvailable 转为字节，通过 /metrics 暴露 Gauge | 只采集一个指标，读取失败返回 500 |
 | PostgreSQL | 独立的 PostgresStore.Create/Get 及可选集成测试 | HTTP 仍使用 MemoryStore，数据库没有完整 CRUD |
 | 容器与监控 | 多阶段 Docker 构建、Compose 双服务、Prometheus 配置 | 本地实验配置，未提供生产部署保障 |
-| Kubernetes | Deployment、ClusterIP Service、readiness 与端口诊断清单 | 本地 kind 示例；未实现 Operator 或维护控制器 |
+| Kubernetes | Deployment、ClusterIP Service、readiness 与端口诊断清单；独立模块实现受限维护控制器 | 本地 kind 实验；各模块的已验与未检范围分别说明 |
 
 ## 快速开始
 
@@ -152,7 +152,7 @@ go test -v -count=1 .
 
 ## 后续方向
 
-继续以这个服务作为可观察的实验负载，探索 Kubernetes 节点维护、Eviction、PDB 与替代副本恢复，再实现有范围约束的 Go 维护协调控制器。重点是可重试动作、状态恢复与变更所有权。这些属于后续目标，当前仓库不提供相应控制器功能。
+继续以这个服务作为可观察的实验负载，完成[维护控制器](./module/maintenance-controller/README.md)现有切片的受限部署与运行说明。重点是权限、可重试动作、状态恢复与变更所有权；自动归还、取消、多节点与HA仍属后续条件性目标。
 
 ## 许可证
 

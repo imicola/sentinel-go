@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maintenance-controller
+  namespace: maintenance-lab
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+
+  selector:
+    matchLabels:
+      app: maintenance-controller
+
+  template:
+    metadata:
+      labels:
+        app: maintenance-controller
+    spec:
+      serviceAccountName: maintenance-controller
+
+      # 假设本轮维护目标在 a 组，控制器放在 b 组。
+      nodeSelector:
+        maintenance.kind/group: b
+
+      containers:
+        - name: controller
+          image: maintenance-controller:w45
+          imagePullPolicy: IfNotPresent
+          args: ["--mode", "in-cluster"]
