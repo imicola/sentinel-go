@@ -5,12 +5,14 @@ package main
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,12 +36,18 @@ func testScheme() *runtime.Scheme {
 
 // newTestClient：W44 需要注册 spec.nodeName 索引（ReadFacts 用 field selector）。
 func newTestClient(objs ...client.Object) client.Client {
+	return newTestClientWithInterceptors(interceptor.Funcs{}, objs...)
+}
+
+// newTestClientWithInterceptors：同一套装配，额外挂拦截器（重读/竞态用例用）。
+func newTestClientWithInterceptors(hooks interceptor.Funcs, objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().
 		WithScheme(testScheme()).
 		WithStatusSubresource(&MaintenancePlan{}).
 		WithIndex(&corev1.Pod{}, "spec.nodeName", func(o client.Object) []string {
 			return []string{o.(*corev1.Pod).Spec.NodeName}
 		}).
+		WithInterceptorFuncs(hooks).
 		WithObjects(objs...).
 		Build()
 }
@@ -88,14 +96,25 @@ func pdbZero(namespace string) *policyv1.PodDisruptionBudget {
 	}
 }
 
-func key() ctrl.Request {
-	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "maintenance-lab", Name: "plan-1"}}
+func requestFor(name string) ctrl.Request {
+	return ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "maintenance-lab", Name: name}}
 }
+
+func key() ctrl.Request { return requestFor("plan-1") }
 
 func getPlan(t *testing.T, c client.Client) *MaintenancePlan {
 	t.Helper()
 	var p MaintenancePlan
 	if err := c.Get(context.Background(), key().NamespacedName, &p); err != nil {
+		t.Fatal(err)
+	}
+	return &p
+}
+
+func getPlanByName(t *testing.T, c client.Client, name string) *MaintenancePlan {
+	t.Helper()
+	var p MaintenancePlan
+	if err := c.Get(context.Background(), client.ObjectKey{Namespace: "maintenance-lab", Name: name}, &p); err != nil {
 		t.Fatal(err)
 	}
 	return &p
@@ -324,6 +343,196 @@ func TestCordon_RereadPreconditionsChanged(t *testing.T) {
 				t.Fatal("没有提交成功就不得报 Cordoned——失败不报成功")
 			}
 		})
+	}
+}
+
+// TestCordon_Conflict：同一节点的两个申请同时走到"提交 cordon"。
+// 闸门拦住 Node Update：两轮都已完成重读、都带着同一份 resourceVersion 快照；
+// 先放行 A → A 以该 RV 提交成功；再放行 B → B 用过期 RV 提交，收到冲突（409）。
+// 协调层把冲突翻译成"重排队"；下一轮 B 重读事实，看到 A 已 cordon 而停手且不再写 Node。
+// 即使 B 显式 allowEviction，重排队也不能越过 cordon 归属进入疏散阶段（进度保持 nil）。
+//
+// 注意：当前 Decide 的门次序是"节点已不可调度"先于"他人标记"，
+// 所以 B 下一轮报告 Blocked/node-already-cordoned；foreign-marker 只用于
+// "节点还没被 cordon，但已带他人标记"的场景（见 TestCordon_ForeignMarker）。
+func TestCordon_Conflict(t *testing.T) {
+	planA := testPlan("uid-plan-A")
+	planA.Name = "plan-A"
+	planB := testPlan("uid-plan-B")
+	planB.Name = "plan-B"
+	// 输家一开始就显式允许驱逐：证明"能驱逐"不是进入疏散阶段的门，
+	// cordon 归属才是——冲突重排队后它仍应停在 Blocked。
+	planB.Spec.AllowEviction = true
+
+	type nodeUpdateAttempt struct {
+		planUID         string
+		resourceVersion string
+	}
+	type nodeUpdateResult struct {
+		planUID string
+		err     error
+	}
+
+	arrived := make(chan nodeUpdateAttempt, 2)
+	updated := make(chan nodeUpdateResult, 2)
+	releaseA := make(chan struct{})
+	releaseB := make(chan struct{})
+	releaseByUID := map[string]chan struct{}{
+		"uid-plan-A": releaseA,
+		"uid-plan-B": releaseB,
+	}
+
+	hooks := interceptor.Funcs{
+		Update: func(
+			ctx context.Context,
+			underlying client.WithWatch,
+			obj client.Object,
+			opts ...client.UpdateOption,
+		) error {
+			node, ok := obj.(*corev1.Node)
+			if !ok || node.Name != "worker-a" {
+				return underlying.Update(ctx, obj, opts...)
+			}
+			// ApplyCordon 在同一次更新里写入 marker，可直接用它认出是谁在提交。
+			planUID := node.Annotations[MarkerAnnotation]
+			gate, tracked := releaseByUID[planUID]
+			if !tracked {
+				return underlying.Update(ctx, obj, opts...)
+			}
+			// 到达闸门即代表该轮已完成"重读 Node"——此时任何一方都还没提交。
+			select {
+			case arrived <- nodeUpdateAttempt{planUID: planUID, resourceVersion: node.ResourceVersion}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			select {
+			case <-gate:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			err := underlying.Update(ctx, obj, opts...)
+			select {
+			case updated <- nodeUpdateResult{planUID: planUID, err: err}:
+			case <-ctx.Done():
+			}
+			return err
+		},
+	}
+
+	c := newTestClientWithInterceptors(hooks, planA, planB,
+		readyNode("worker-a", "uid-node-1"), readyDeployment("maintenance-lab", "sentinel"))
+	r := &MaintenancePlanReconciler{Client: c, Evictor: NewFakeEvictor()}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type reconcileResult struct {
+		name string
+		res  ctrl.Result
+		err  error
+	}
+	reconciled := make(chan reconcileResult, 2)
+	var wg sync.WaitGroup
+	// 失败时先取消并等 goroutine 退出，避免在 Test 结束后还有 goroutine 调用 t.Error。
+	abort := func(format string, args ...any) {
+		cancel()
+		wg.Wait()
+		t.Fatalf(format, args...)
+	}
+	run := func(name string) {
+		defer wg.Done()
+		res, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{
+			Namespace: "maintenance-lab", Name: name,
+		}})
+		reconciled <- reconcileResult{name: name, res: res, err: err}
+	}
+
+	wg.Add(2)
+	go run("plan-A")
+	go run("plan-B")
+
+	// 两轮都到达闸门，才说明两次重读都发生在任何提交之前——同一份旧快照的竞态成立。
+	attempts := map[string]nodeUpdateAttempt{}
+	for len(attempts) < 2 {
+		select {
+		case a := <-arrived:
+			attempts[a.planUID] = a
+		case <-time.After(5 * time.Second):
+			abort("等待两个 Node Update 到达闸门超时，已到达: %v", attempts)
+		}
+	}
+	if attempts["uid-plan-A"].resourceVersion != attempts["uid-plan-B"].resourceVersion {
+		abort("两轮携带的旧快照 RV 不一致（%q vs %q），未构成同一 RV 的竞态",
+			attempts["uid-plan-A"].resourceVersion, attempts["uid-plan-B"].resourceVersion)
+	}
+
+	close(releaseA)
+	select {
+	case u := <-updated:
+		if u.planUID != "uid-plan-A" || u.err != nil {
+			abort("先放行的 A 应提交成功，得到 plan=%s err=%v", u.planUID, u.err)
+		}
+	case <-time.After(5 * time.Second):
+		abort("等待 A 的 Node Update 结果超时")
+	}
+
+	close(releaseB)
+	select {
+	case u := <-updated:
+		if u.planUID != "uid-plan-B" || !apierrors.IsConflict(u.err) {
+			abort("后放行的 B 应以冲突失败，得到 plan=%s err=%v", u.planUID, u.err)
+		}
+	case <-time.After(5 * time.Second):
+		abort("等待 B 的 Node Update 结果超时")
+	}
+
+	results := map[string]reconcileResult{}
+	for len(results) < 2 {
+		select {
+		case rr := <-reconciled:
+			results[rr.name] = rr
+		case <-time.After(5 * time.Second):
+			abort("等待 Reconcile 返回超时，已返回: %v", results)
+		}
+	}
+	wg.Wait()
+
+	if rr := results["plan-A"]; rr.err != nil {
+		t.Fatalf("A 的协调应成功: %v", rr.err)
+	}
+	if rr := results["plan-B"]; rr.err != nil || !rr.res.Requeue {
+		t.Fatalf("B 首轮应把冲突翻译成重排队: res=%+v err=%v", rr.res, rr.err)
+	}
+
+	node := getNode(t, c)
+	if !node.Spec.Unschedulable || node.Annotations[MarkerAnnotation] != "uid-plan-A" {
+		t.Fatalf("节点应保留 A 的 cordon: unschedulable=%v marker=%q",
+			node.Spec.Unschedulable, node.Annotations[MarkerAnnotation])
+	}
+	rvAfterA := node.ResourceVersion
+
+	// 下一轮：B 带着新事实重判，读到 A 的所有权标记后停手（不写 Node）。
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{
+		Namespace: "maintenance-lab", Name: "plan-B",
+	}}); err != nil {
+		t.Fatalf("B 的重排队轮应正常结束: %v", err)
+	}
+	got := getNode(t, c)
+	if got.ResourceVersion != rvAfterA {
+		t.Fatalf("B 的下一轮不应写 Node：rv %s → %s", rvAfterA, got.ResourceVersion)
+	}
+	if got.Annotations[MarkerAnnotation] != "uid-plan-A" {
+		t.Fatalf("B 不应抢走 A 的标记，got %q", got.Annotations[MarkerAnnotation])
+	}
+	gotB := getPlanByName(t, c, "plan-B")
+	if gotB.Status.Phase != PhaseBlocked || gotB.Status.Reason != "node-already-cordoned" {
+		t.Fatalf("B 下一轮 status = %s/%s，期望 Blocked/node-already-cordoned",
+			gotB.Status.Phase, gotB.Status.Reason)
+	}
+	// 因果链：允许驱逐 + 重排队 ≠ 能进入疏散阶段。B 在 cordon 阶段就被挡住，
+	// 一次进度都没保存；若这里非 nil，说明实现绕过了 cordon 归属直接开疏散。
+	if gotB.Status.EvictionProgress != nil {
+		t.Fatalf("B 输掉 cordon 抢占后不得进入疏散阶段，却保存了进度: %+v", gotB.Status.EvictionProgress)
 	}
 }
 

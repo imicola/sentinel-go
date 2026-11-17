@@ -111,6 +111,51 @@ func TestDrain_EvictsOnePodUIDBound(t *testing.T) {
 	}
 }
 
+// TestDrain_OnlyCordonOwnerEvicts：两份申请都显式允许驱逐、都带合法的疏散进度，
+// 但 Node 上的 cordon 只属于 A。各用一个 FakeEvictor 记录调用：
+//   - A 必须真的发出一次——正向对照，证明这套 Pod 与判断条件确实能走到 EvictPod；
+//     没有这一条，"B 零次"可能只是因为测试环境里谁都驱逐不了而假绿。
+//   - B 必须零次——它从不拥有该 Node 的 cordon（marker 是 A 的），
+//     即使 allowEviction=true、进度合法，也不能动手。
+func TestDrain_OnlyCordonOwnerEvicts(t *testing.T) {
+	dep := ownedDeployment(1, 1)
+	rs := rsFor(dep)
+	planA := cordonedDrainPlan("uid-plan-A", 10*time.Minute)
+	planA.Name = "plan-A"
+	planB := cordonedDrainPlan("uid-plan-B", 10*time.Minute)
+	planB.Name = "plan-B"
+	pod := ownedPod(rs, "sentinel-aaa", "uid-pod-a", "worker-a", true, false)
+
+	c := newTestClient(planA, planB, cordonedNode("uid-plan-A"), dep, rs, pod)
+	evA, evB := NewFakeEvictor(), NewFakeEvictor()
+	rA := &MaintenancePlanReconciler{Client: c, Evictor: evA}
+	rB := &MaintenancePlanReconciler{Client: c, Evictor: evB}
+
+	if _, err := rA.Reconcile(context.Background(), requestFor("plan-A")); err != nil {
+		t.Fatal(err)
+	}
+	callsA := evA.Calls()
+	if len(callsA) != 1 {
+		t.Fatalf("A 应发出一次驱逐请求，got %d 次：测试前提没走到 EvictPod", len(callsA))
+	}
+	if callsA[0] != (EvictCall{Namespace: "maintenance-lab", Name: "sentinel-aaa", UID: "uid-pod-a"}) {
+		t.Fatalf("A 的调用 = %+v，期望 maintenance-lab/sentinel-aaa/uid-pod-a", callsA[0])
+	}
+
+	if _, err := rB.Reconcile(context.Background(), requestFor("plan-B")); err != nil {
+		t.Fatal(err)
+	}
+	if calls := evB.Calls(); len(calls) != 0 {
+		t.Fatalf("B 不拥有该 Node 的 cordon，不得发出驱逐请求，got %+v", calls)
+	}
+	if got := getPlanByName(t, c, "plan-A"); got.Status.Reason != "eviction-request-accepted" {
+		t.Fatalf("A status.reason = %s，期望 eviction-request-accepted", got.Status.Reason)
+	}
+	if got := getPlanByName(t, c, "plan-B"); got.Status.Phase != PhaseBlocked || got.Status.Reason != "cordon-ownership-lost" {
+		t.Fatalf("B status = %s/%s，期望 Blocked/cordon-ownership-lost", got.Status.Phase, got.Status.Reason)
+	}
+}
+
 // TestDrain_RejectionDoesNotReportComplete（红队①：拒绝不报完成）——TODO(step-2)：
 // 这组输入与断言由你来写，用来抓住下面这个坏实现：
 //
